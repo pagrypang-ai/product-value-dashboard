@@ -45,6 +45,7 @@ def parse_number(value):
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename = {
+        "Channel": "Channel",
         "Pickup or not": "Pickup or Not",
         "Number of Reviews": "Number of Reviews",
         "Was Price": "Was Price",
@@ -52,12 +53,28 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         "Phone stand": "Phone Stand",
         "LED display": "LED Display",
         "Wireless or Not": "Wireless or Not",
+        "Magnetic charging": "Magnetic Charging",
         "Fast charging protocol": "Fast Charging Protocol",
         "USB power (Max)": "USB Power (Max)",
         "URL of Image": "Image URL",
         "Link": "Link",
     }
     return df.rename(columns=rename)
+
+
+def status_events(row, date_columns):
+    events = []
+    for col in date_columns:
+        value = row.get(col)
+        if pd.isna(value) or value == "":
+            continue
+        text = str(value).lower()
+        event_date = pd.to_datetime(col).date()
+        if "add" in text:
+            events.append((event_date, "available"))
+        if "unavailable" in text:
+            events.append((event_date, "unavailable"))
+    return events
 
 
 def status_periods(row, date_columns):
@@ -79,6 +96,14 @@ def status_periods(row, date_columns):
     return periods
 
 
+def status_on_date(events, query_date):
+    status = "unavailable"
+    for event_date, event_status in events:
+        if event_date <= query_date:
+            status = event_status
+    return status
+
+
 @st.cache_data(ttl=600)
 def load_data(uploaded_file=None, sheet_csv_url=""):
     if uploaded_file is not None:
@@ -92,15 +117,23 @@ def load_data(uploaded_file=None, sheet_csv_url=""):
         raw = pd.read_csv("data/product_data_sample.csv")
 
     df = normalize_columns(raw)
+    if "Channel" not in df.columns:
+        df["Channel"] = "Best Buy"
+    df["Channel"] = df["Channel"].fillna("Best Buy").astype(str).str.strip()
+    df.loc[df["Channel"] == "", "Channel"] = "Best Buy"
+    df["Channel Group"] = df["Channel"]
     df["Brand"] = df["Brand"].astype(str).str.strip()
     df["Brand Group"] = df["Brand"].str.replace(r"(?i)^mycharge$", "myCharge", regex=True)
     df["Pickup Group"] = df["Pickup or Not"].astype(str).str.strip().str.title()
     df["Price Num"] = df["Price"].apply(parse_number)
     df["Capacity Num"] = df["Capacity/mAh"].apply(parse_number)
     df["USB Num"] = df["USB Power (Max)"].apply(parse_number)
-    df["Rating Group"] = df["Rating"].fillna("N/A").astype(str)
     df["Capacity Group"] = df["Capacity Num"].apply(lambda x: f"{int(x):,} mAh" if pd.notna(x) else "N/A")
     df["USB Group"] = df["USB Power (Max)"].fillna("N/A").astype(str)
+    if "Magnetic Charging" not in df.columns:
+        df["Magnetic Charging"] = "N/A"
+    df["Magnetic Charging Group"] = df["Magnetic Charging"].fillna("N/A").astype(str).str.strip()
+    df.loc[df["Magnetic Charging Group"] == "", "Magnetic Charging Group"] = "N/A"
     df["Image Source"] = df["Image URL"].fillna("").astype(str)
 
     date_columns = []
@@ -112,8 +145,10 @@ def load_data(uploaded_file=None, sheet_csv_url=""):
         except Exception:
             pass
 
+    date_columns = sorted(date_columns, key=lambda col: pd.to_datetime(col).date())
+    df["Shelf Events"] = df.apply(lambda row: status_events(row, date_columns), axis=1)
     df["Shelf Periods"] = df.apply(lambda row: status_periods(row, date_columns), axis=1)
-    df["Available Now"] = df["Shelf Periods"].apply(lambda periods: bool(periods and periods[-1][1] == CURRENT_DATE))
+    df["Available Now"] = df["Shelf Events"].apply(lambda events: status_on_date(events, CURRENT_DATE) == "available")
 
     capacities = sorted(df["Capacity Num"].dropna().unique())
     rank = {capacity: index + 1 for index, capacity in enumerate(capacities)}
@@ -135,10 +170,6 @@ def load_data(uploaded_file=None, sheet_csv_url=""):
     return df, capacities
 
 
-def overlaps(periods, start, end):
-    return any(period_start <= end and period_end >= start for period_start, period_end in periods)
-
-
 st.title("Product Value Matrix")
 
 sheet_url = ""
@@ -151,32 +182,38 @@ uploaded = st.sidebar.file_uploader("Data File", type=["csv", "xlsx"])
 df, capacities = load_data(uploaded, sheet_url)
 
 all_dates = []
-for periods in df["Shelf Periods"]:
-    for start, end in periods:
-        all_dates.extend([start, end])
+for events in df["Shelf Events"]:
+    for event_date, _ in events:
+        all_dates.append(event_date)
 min_date = min(all_dates) if all_dates else date(2024, 1, 1)
-max_date = max(all_dates) if all_dates else CURRENT_DATE
+max_date = max(max(all_dates), CURRENT_DATE) if all_dates else CURRENT_DATE
 
-start_date, end_date = st.sidebar.date_input("Shelf Date Range", (min_date, max_date), min_value=min_date, max_value=max_date)
+query_date = st.sidebar.date_input("Query Date", max_date, min_value=min_date, max_value=max_date)
+if isinstance(query_date, tuple):
+    query_date = query_date[0]
+df["Availability on Query Date"] = df["Shelf Events"].apply(lambda events: status_on_date(events, query_date))
+channels = st.sidebar.multiselect("Channel", sorted(df["Channel Group"].dropna().unique()), default=sorted(df["Channel Group"].dropna().unique()))
 brands = st.sidebar.multiselect("Brand", sorted(df["Brand Group"].dropna().unique()), default=sorted(df["Brand Group"].dropna().unique()))
 pickup = st.sidebar.multiselect("Pickup or Not", sorted(df["Pickup Group"].dropna().unique()), default=sorted(df["Pickup Group"].dropna().unique()))
-ratings = st.sidebar.multiselect("Rating", sorted(df["Rating Group"].dropna().unique()), default=sorted(df["Rating Group"].dropna().unique()))
+availability = st.sidebar.multiselect("Availability on Query Date", ["available", "unavailable"], default=["available", "unavailable"])
+magnetic = st.sidebar.multiselect("Magnetic Charging", sorted(df["Magnetic Charging Group"].dropna().unique()), default=sorted(df["Magnetic Charging Group"].dropna().unique()))
 capacity = st.sidebar.multiselect("Capacity", sorted(df["Capacity Group"].dropna().unique()), default=sorted(df["Capacity Group"].dropna().unique()))
 usb = st.sidebar.multiselect("USB Power", sorted(df["USB Group"].dropna().unique()), default=sorted(df["USB Group"].dropna().unique()))
 
 mask = (
-    df["Brand Group"].isin(brands)
+    df["Channel Group"].isin(channels)
+    & df["Brand Group"].isin(brands)
     & df["Pickup Group"].isin(pickup)
-    & df["Rating Group"].isin(ratings)
+    & df["Availability on Query Date"].isin(availability)
+    & df["Magnetic Charging Group"].isin(magnetic)
     & df["Capacity Group"].isin(capacity)
     & df["USB Group"].isin(usb)
-    & df["Shelf Periods"].apply(lambda periods: overlaps(periods, start_date, end_date))
 )
 plot_df = df.loc[mask & df["Price Num"].notna() & df["Value Index"].notna() & (df["Image Source"] != "")].copy()
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Shown Products", f"{len(plot_df):,}")
-col2.metric("Available Now", f"{plot_df['Available Now'].sum():,}")
+col2.metric("Available on Query Date", f"{plot_df['Availability on Query Date'].eq('available').sum():,}")
 col3.metric("Median Price", "N/A" if plot_df.empty else f"${plot_df['Price Num'].median():,.2f}")
 col4.metric(
     "Capacity Range",
@@ -209,7 +246,7 @@ chart = (
     .mark_image(width=46, height=46)
     .encode(
         x=alt.X("Price Num:Q", title="Price ($)", scale=alt.Scale(zero=False)),
-        y=alt.Y("Value Index:Q", title="Product Value"),
+        y=alt.Y("Value Index:Q", title="Product Value (Capacity + Output Power Max)"),
         url="Image Source:N",
         href="Link:N",
         tooltip=tooltip,
