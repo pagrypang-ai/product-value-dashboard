@@ -241,8 +241,14 @@ tooltip = [
     alt.Tooltip("Warranty:N", title="Warranty"),
 ]
 
+chart_columns = list(dict.fromkeys(["Price Num", "Value Index", "Image Source", "Link", *DISPLAY_FIELDS]))
+chart_df = plot_df[[column for column in chart_columns if column in plot_df.columns]].copy()
+for column in chart_df.columns:
+    if column not in {"Price Num", "Value Index"}:
+        chart_df[column] = chart_df[column].fillna("").astype(str)
+
 chart = (
-    alt.Chart(plot_df)
+    alt.Chart(chart_df)
     .mark_image(width=46, height=46)
     .encode(
         x=alt.X("Price Num:Q", title="Price ($)", scale=alt.Scale(zero=False)),
