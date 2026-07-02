@@ -12,6 +12,32 @@ import streamlit as st
 st.set_page_config(page_title="Product Value Matrix", layout="wide")
 
 CURRENT_DATE = pd.Timestamp.today().date()
+BRAND_COLOR_PALETTE = [
+    "#0072B2",
+    "#D55E00",
+    "#009E73",
+    "#CC79A7",
+    "#E69F00",
+    "#332288",
+    "#88CCEE",
+    "#882255",
+    "#44AA99",
+    "#AA4499",
+    "#117733",
+    "#DDCC77",
+    "#661100",
+    "#6699CC",
+    "#AA4466",
+    "#6A3D9A",
+    "#B15928",
+    "#1B9E77",
+    "#E7298A",
+    "#66A61E",
+    "#E6AB02",
+    "#A6761D",
+    "#666666",
+    "#E41A1C",
+]
 DISPLAY_FIELDS = [
     "Brand",
     "Pickup or Not",
@@ -170,7 +196,15 @@ def load_data(uploaded_file=None, sheet_csv_url=""):
     return df, capacities
 
 
-st.title("Product Value Matrix")
+title_col, mode_col = st.columns([3, 1])
+with title_col:
+    st.title("Product Value Matrix")
+with mode_col:
+    display_mode = st.radio(
+        "Point Display",
+        ["Product Image", "Brand Color"],
+        horizontal=True,
+    )
 
 sheet_url = ""
 try:
@@ -241,24 +275,60 @@ tooltip = [
     alt.Tooltip("Warranty:N", title="Warranty"),
 ]
 
-chart_columns = list(dict.fromkeys(["Price Num", "Value Index", "Image Source", "Link", *DISPLAY_FIELDS]))
+chart_columns = list(dict.fromkeys(["Price Num", "Value Index", "Image Source", "Link", "Brand Group", *DISPLAY_FIELDS]))
 chart_df = plot_df[[column for column in chart_columns if column in plot_df.columns]].copy()
 for column in chart_df.columns:
     if column not in {"Price Num", "Value Index"}:
         chart_df[column] = chart_df[column].fillna("").astype(str)
 
-chart = (
-    alt.Chart(chart_df)
-    .mark_image(width=46, height=46)
-    .encode(
-        x=alt.X("Price Num:Q", title="Price ($)", scale=alt.Scale(zero=False)),
-        y=alt.Y("Value Index:Q", title="Product Value (Capacity + Output Power Max)"),
-        url="Image Source:N",
+x_axis = alt.X("Price Num:Q", title="Price ($)", scale=alt.Scale(zero=False))
+y_axis = alt.Y("Value Index:Q", title="Product Value (Capacity + Output Power Max)")
+
+if display_mode == "Product Image":
+    chart = (
+        alt.Chart(chart_df)
+        .mark_image(width=46, height=46)
+        .encode(
+            x=x_axis,
+            y=y_axis,
+            url="Image Source:N",
+            href="Link:N",
+            tooltip=tooltip,
+        )
+        .properties(height=720)
+        .interactive()
+    )
+else:
+    brand_domain = sorted(df["Brand Group"].dropna().astype(str).unique())
+    brand_range = [BRAND_COLOR_PALETTE[index % len(BRAND_COLOR_PALETTE)] for index, _ in enumerate(brand_domain)]
+    base_chart = alt.Chart(chart_df).encode(x=x_axis, y=y_axis)
+    point_chart = base_chart.mark_circle(
+        size=170,
+        opacity=0.92,
+        stroke="#ffffff",
+        strokeWidth=1.5,
+    ).encode(
+        color=alt.Color(
+            "Brand Group:N",
+            title="Brand",
+            scale=alt.Scale(domain=brand_domain, range=brand_range),
+        ),
         href="Link:N",
         tooltip=tooltip,
     )
-    .properties(height=720)
-    .interactive()
-)
+    label_chart = base_chart.mark_text(
+        align="center",
+        baseline="top",
+        dy=12,
+        fontSize=10,
+        fontWeight="normal",
+        color="#1f2933",
+        opacity=0.46,
+    ).encode(
+        text="Brand Group:N",
+        href="Link:N",
+        tooltip=tooltip,
+    )
+    chart = (point_chart + label_chart).properties(height=720).interactive()
 
 st.altair_chart(chart, use_container_width=True)
